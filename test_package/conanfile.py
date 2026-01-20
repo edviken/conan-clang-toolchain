@@ -23,5 +23,8 @@ class TestPackageConan(ConanFile):
         test_file = os.path.join(self.cpp.build.bindirs[0], "test_package")
         stdout = StringIO()
         self.run(f"file {test_file}", stdout=stdout)
-        assert "ELF 64-bit" in stdout.getvalue()
+        if self.settings.os == "Macos":
+            assert "Mach-O 64-bit" in stdout.getvalue()
+        else:
+            assert "ELF 64-bit" in stdout.getvalue()
 
