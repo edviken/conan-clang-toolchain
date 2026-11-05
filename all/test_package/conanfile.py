@@ -27,4 +27,3 @@ class TestPackageConan(ConanFile):
             assert "Mach-O 64-bit" in stdout.getvalue()
         else:
             assert "ELF 64-bit" in stdout.getvalue()
-
