@@ -1,7 +1,11 @@
-from io import StringIO
-from conan import ConanFile
-from conan.tools.cmake import CMake, cmake_layout
 import os
+import shlex
+from tempfile import TemporaryDirectory
+
+from conan import ConanFile
+from conan.tools.build import can_run
+from conan.tools.cmake import CMake, cmake_layout
+
 
 class TestPackageConan(ConanFile):
     settings = "os", "arch", "compiler", "build_type"
@@ -19,11 +23,20 @@ class TestPackageConan(ConanFile):
         cmake.build()
 
     def test(self):
-        self.run(f"clang++ --version")
-        test_file = os.path.join(self.cpp.build.bindirs[0], "test_package")
-        stdout = StringIO()
-        self.run(f"file {test_file}", stdout=stdout)
-        if self.settings.os == "Macos":
-            assert "Mach-O 64-bit" in stdout.getvalue()
-        else:
-            assert "ELF 64-bit" in stdout.getvalue()
+        if not can_run(self):
+            return
+
+        def run_without_loader_overrides(executable):
+            self.run("env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "
+                     f"-u LD_LIBRARY_PATH {shlex.quote(executable)}", env=None)
+
+        executable = os.path.join(self.build_folder, self.cpp.build.bindirs[0], "test_package")
+        run_without_loader_overrides(executable)
+
+        with TemporaryDirectory() as staging:
+            original = os.path.join(staging, "install")
+            relocated = os.path.join(staging, "relocated")
+            self.run(f"cmake --install {shlex.quote(self.build_folder)} "
+                     f"--config {self.settings.build_type} --prefix {shlex.quote(original)}")
+            os.rename(original, relocated)
+            run_without_loader_overrides(os.path.join(relocated, "bin", "test_package"))
