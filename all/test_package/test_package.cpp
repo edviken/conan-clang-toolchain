@@ -3,7 +3,7 @@
 #include <variant>
 
 #ifndef _LIBCPP_VERSION
-#error "This test must use the packaged libc++ headers"
+#error "This test must use libc++ headers"
 #endif
 
 void throw_from_library();

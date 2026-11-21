@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-import shlex
+import subprocess
 
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
@@ -38,32 +38,18 @@ class LlvmToolchainPackage(ConanFile):
         for dir_name in dirs_to_copy:
             copy(self, pattern=f"{dir_name}/*", src=self.build_folder, dst=self.package_folder, keep_path=True)
         copy(self, "LICENSE", src=self.source_folder, dst=os.path.join(self.package_folder, "licenses"), keep_path=False)
-        if self.settings.os == "Macos" and str(self.version) == "23.1.4":
-            self._relink_macos_unwind()
         self._package_runtime_configuration()
-
-    def _relink_macos_unwind(self):
-        lib = Path(self.package_folder) / "lib"
-        # The 23.1.4 dylib has conflicting compact-unwind entries for
-        # _Unwind_RaiseException. Relink the shipped objects with Apple ld.
-        output = lib / "libunwind.1.0.dylib"
-        rebuilt = lib / "libunwind.relinked.dylib"
-        command = [
-            "xcrun", "--sdk", "macosx", "clang", "-fuse-ld=ld",
-            "-arch", "arm64", "-mmacosx-version-min=14.0", "-dynamiclib",
-            "-Xlinker", "-force_load", "-Xlinker", str(lib / "libunwind.a"),
-            "-Wl,-install_name,@rpath/libunwind.1.dylib",
-            "-Wl,-compatibility_version,1.0.0", "-Wl,-current_version,1.0.0",
-            "-o", str(rebuilt),
-        ]
-        self.run(" ".join(shlex.quote(arg) for arg in command))
-        rebuilt.replace(output)
 
     def _package_runtime_configuration(self):
         root = Path(self.package_folder)
-        is_macos = self.settings.os == "Macos"
-        names = [f"lib{name}.1.dylib" if is_macos else f"lib{name}.so.1"
-                 for name in ("c++", "c++abi", "unwind")]
+        if self.settings.os == "Macos":
+            save(self, str(root / "bin" / "clang++.cfg"),
+                 "-stdlib=libc++\n-nostdinc++\n-isystem =/usr/include/c++/v1\n")
+            save(self, str(root / "llvm-runtime.cmake"),
+                 "function(llvm_toolchain_install_runtimes)\nendfunction()\n")
+            return
+
+        names = [f"lib{name}.so.1" for name in ("c++", "c++abi", "unwind")]
         candidates = [root / "lib", *sorted((root / "lib").glob("*-linux-*"))]
         lib = next((path for path in candidates if all((path / name).is_file() for name in names)), None)
         if lib is None:
@@ -81,18 +67,16 @@ class LlvmToolchainPackage(ConanFile):
             flags.append(f'-isystem"<CFGDIR>/../{config_headers.relative_to(root).as_posix()}"')
         flags.append('-isystem"<CFGDIR>/../include/c++/v1"')
         # Clang appends $-prefixed config options after the link inputs.
-        if not is_macos:
-            flags.append("$-Wl,--push-state,--no-as-needed")
+        flags.append("$-Wl,--push-state,--no-as-needed")
         flags.extend(f'$"<CFGDIR>/../{libdir}/{name}"' for name in names)
-        if not is_macos:
-            flags.append("$-Wl,--pop-state")
+        flags.append("$-Wl,--pop-state")
         save(self, str(root / "bin" / "clang++.cfg"), "\n".join(flags) + "\n")
 
         template = load(self, os.path.join(self.source_folder, "llvm-runtime.cmake.in"))
         save(self, str(root / "llvm-runtime.cmake"),
              template.replace("@LLVM_RUNTIME_LIBDIR@", libdir)
              .replace("@LLVM_RUNTIME_NAMES@", ";".join(names))
-             .replace("@LLVM_RUNTIME_ORIGIN@", "@loader_path" if is_macos else "$ORIGIN"))
+             .replace("@LLVM_RUNTIME_ORIGIN@", "$ORIGIN"))
 
     def package_id(self):
         self.info.settings_target = self.settings_target
@@ -113,5 +97,9 @@ class LlvmToolchainPackage(ConanFile):
                               os.path.join(self.package_folder, "llvm-runtime.cmake"))
         self.conf_info.append("tools.build:cxxflags", "-stdlib=libc++")
         if self.settings.os == "Macos":
-            self.conf_info.append("tools.build:exelinkflags", "-fuse-ld=lld")
-            self.conf_info.append("tools.build:sharedlinkflags", "-fuse-ld=lld")
+            sdk = os.environ.get("SDKROOT")
+            if not sdk:
+                sdk = subprocess.check_output(
+                    ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True
+                ).strip()
+            self.buildenv_info.define_path("SDKROOT", sdk)
